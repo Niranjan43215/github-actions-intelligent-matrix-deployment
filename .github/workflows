@@ -1,0 +1,309 @@
+name: Microservice for all CI-CD Engine
+
+on:
+  push:
+    branches:
+      - "xxxxxxxxxxxxx"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::xxxxxxxxxxxxxx:role/rw-github-role(OIDC AUTH)
+  STACK_NAME: xxxxxxxxxxxxxx
+  CFN_S3_BUCKET: xxxxxxxxxxxxxxxxxx
+  CLUSTER_NAME: xxxxxxxxxxxxxxxxxxx
+
+jobs:
+  detect-changes:
+    name: "Stage 0: Native Path Analysis"
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.services }}
+      has_changes: ${{ steps.filter.outputs.has_changes }}
+    steps:
+      - name: Checkout Repository Natively
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Native Microservice Filtering Engine
+        id: filter
+        run: |
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+          echo "Files Changed in Commit"
+          echo "$CHANGED_FILES"
+          echo "="
+
+          SERVICES_ARRAY=()
+
+          if echo "$CHANGED_FILES" | grep -qE "^xxxxxxxxxxxxx/shared/"; then
+            echo "Shared core changed! Queueing full application matrix update..."
+            SERVICES_ARRAY+=("\"AAAAAA\"" "\"BBBBB\"" "\"CCCCCC\"" "\"DDDDDDDD\"" "\"EEEE\"" "\"FFFFF\"" "\"GGGGGGGGG\"" "\"HHHHHH\"")
+          else
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/AAAAAA/"; then SERVICES_ARRAY+=("\"AAAAAA\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/BBBBB/"; then SERVICES_ARRAY+=("\"BBBBB\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/CCCCCC/"; then SERVICES_ARRAY+=("\"CCCCCC\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/DDDDDDDD/"; then SERVICES_ARRAY+=("\"DDDDDDDD\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/EEEE/"; then SERVICES_ARRAY+=("\"EEEE\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/FFFFF/"; then SERVICES_ARRAY+=("\"FFFFF\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/GGGGGGGGG/"; then SERVICES_ARRAY+=("\"GGGGGGGGG\""); fi
+            if echo "$CHANGED_FILES" | grep -q "xxxxxxxxxxxxx/services/HHHHHH/"; then SERVICES_ARRAY+=("\"HHHHHH\""); fi
+          fi
+
+          IFS=,
+          if [ ${#SERVICES_ARRAY[@]} -eq 0 ]; then
+            JSON_SERVICES="[\"none\"]"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            JSON_SERVICES="[${SERVICES_ARRAY[*]}]"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "services=$JSON_SERVICES" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    name: "Build & Push: ${{ matrix.service }}"
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: ${{ needs.detect-changes.outputs.has_changes == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - name: Validate Pipeline Context Target
+        if: ${{ matrix.service == 'none' }}
+        run: |
+          echo "No targeted service files modified. Exiting cleanly."
+          exit 0
+
+      - name: Checkout Full Codebase
+        if: ${{ matrix.service != 'none' }}
+        uses: actions/checkout@v4
+
+      - name: Resolve Service-Specific Properties
+        if: ${{ matrix.service != 'none' }}
+        id: properties
+        run: |
+          case "${{ matrix.service }}" in
+            AAAAAA)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/AAAAAA/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa-AAAAAA-service" >> $GITHUB_ENV
+              ;;
+            BBBBB)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/BBBBB/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/BBBBB-service" >> $GITHUB_ENV
+              ;;
+            CCCCCC)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/CCCCCC/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/CCCCCC-service" >> $GITHUB_ENV
+              ;;
+            DDDDDDDD)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/DDDDDDDD/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/DDDDDDDD-service" >> $GITHUB_ENV
+              ;;
+            EEEE)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/EEEE/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/EEEE-service" >> $GITHUB_ENV
+              ;;
+            FFFFF)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/FFFFF/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/FFFFF-service" >> $GITHUB_ENV
+              ;;
+            GGGGGGGGG)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/GGGGGGGGG/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/GGGGGGGGG-service" >> $GITHUB_ENV
+              ;;
+            HHHHHH)
+              echo "FILE_PATH=xxxxxxxxxxxxx/services/HHHHHH/Dockerfile" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/user-mgt-service" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: "Stage 1: Run Code Validation Scan"
+        if: ${{ matrix.service != 'none' }}
+        continue-on-error: true
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/src -w /src gramener/builderrors builderrors || true
+
+      - name: "Stage 2: Packaging Metadata"
+        if: ${{ matrix.service != 'none' }}
+        id: set-meta
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          TAG="uat-${TIMESTAMP}"
+          FILENAME="build-package-${{ matrix.service }}-${TIMESTAMP}.zip"
+          zip -r "$FILENAME" Cloudformation
+          echo "ZIP_FILENAME=$FILENAME" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials via OIDC
+        if: ${{ matrix.service != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-Build-${{ matrix.service }}
+
+      - name: "Stage 3: Archive Blueprint to S3"
+        if: ${{ matrix.service != 'none' }}
+        run: |
+          aws s3 cp "${{ env.ZIP_FILENAME }}" s3://${{ env.CFN_S3_BUCKET }}/packages/
+
+      - name: Set up Docker Buildx
+        if: ${{ matrix.service != 'none' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        if: ${{ matrix.service != 'none' }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: "Stage 4: Build and Push Microservice"
+        if: ${{ matrix.service != 'none' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ env.FILE_PATH }}
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=build-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.service }}
+
+  deploy-cfn:
+    name: "Deploy & Stabilize: ${{ matrix.service }}"
+    needs: [detect-changes, build-and-push]
+    runs-on: ubuntu-latest
+    if: ${{ needs.detect-changes.outputs.has_changes == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1 
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - name: Validate Pipeline Context Target
+        if: ${{ matrix.service == 'none' }}
+        run: |
+          echo "No deployment required for targeted placeholders."
+          exit 0
+
+      - name: Checkout Structural Configuration Only
+        if: ${{ matrix.service != 'none' }}
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Cloudformation
+
+      - name: Configure AWS Credentials via OIDC
+        if: ${{ matrix.service != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-Deploy-${{ matrix.service }}
+
+      - name: Login to Amazon ECR
+        if: ${{ matrix.service != 'none' }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve Deployment Parameters & ECR Tags
+        if: ${{ matrix.service != 'none' }}
+        id: cfn-meta
+        run: |
+          case "${{ matrix.service }}" in
+            AAAAAA)
+              echo "PARAM_KEY=AAAAAAImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa-AAAAAA-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-AAAAAA-service" >> $GITHUB_ENV
+              ;;
+            BBBBB)
+              echo "PARAM_KEY=BBBBBImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/BBBBB-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-BBBBB-service" >> $GITHUB_ENV
+              ;;
+            CCCCCC)
+              echo "PARAM_KEY=CCCCCCImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/CCCCCC-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-CCCCCC-service" >> $GITHUB_ENV
+              ;;
+            DDDDDDDD)
+              echo "PARAM_KEY=DDDDDDDDImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/DDDDDDDD-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-DDDDDDDD-service" >> $GITHUB_ENV
+              ;;
+            EEEE)
+              echo "PARAM_KEY=EEEEImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/EEEE-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-EEEE-service" >> $GITHUB_ENV
+              ;;
+            FFFFF)
+              echo "PARAM_KEY=FFFFFImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/FFFFF-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-FFFFF-service" >> $GITHUB_ENV
+              ;;
+            GGGGGGGGG)
+              echo "PARAM_KEY=GGGGGGGGGImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/GGGGGGGGG-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-GGGGGGGGG-service" >> $GITHUB_ENV
+              ;;
+            HHHHHH)
+              echo "PARAM_KEY=UserMgtImageTag" >> $GITHUB_ENV
+              echo "ECR_REPO=qa/user-mgt-service" >> $GITHUB_ENV
+              echo "ECS_SERVICE=qa-usermgt-service" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Fetch Latest Pushed ECR Tag Natively
+        if: ${{ matrix.service != 'none' }}
+        id: fetch-tag
+        run: |
+          echo "Fetching the absolute newest uat tag pushed to ECR repository..."
+          
+          LATEST_TAG=$(aws ecr describe-images \
+            --repository-name "${{ env.ECR_REPO }}" \
+            --query 'imageDetails | sort_by(@, &imagePushedAt) | [-1].imageTags' \
+            --output text | tr '\t' '\n' | grep '^uat-' | head -n 1)
+          
+          if [ -z "$LATEST_TAG" ]; then
+            echo "Could not find any valid image tag matching pattern 'uat-' in ECR!"
+            exit 1
+          fi
+          
+          echo "Discovered Target Container Image Tag: $LATEST_TAG"
+          echo "DEPLOY_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: "Stage 5: Deploy to Monolithic CloudFormation Stack"
+        if: ${{ matrix.service != 'none' }}
+        run: |
+          TEMPLATE_PATH="Cloudformation/tms-qa-stack3-04.yaml"
+          
+          if [ ! -f "$TEMPLATE_PATH" ]; then
+            echo "Error: CloudFormation template blueprint not found at $TEMPLATE_PATH"
+            exit 1
+          fi
+          
+          echo "Executing update payload to stack for service component: ${{ matrix.service }}..."
+          aws cloudformation deploy \
+            --template-file "$TEMPLATE_PATH" \
+            --stack-name "$STACK_NAME" \
+            --s3-bucket "$CFN_S3_BUCKET" \
+            --s3-prefix "packages" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${{ env.PARAM_KEY }}=${{ env.DEPLOY_TAG }}"
+
+          - name: Verify Service Stability
+                  if: ${{ matrix.service != 'none' }}
+                  run: |
+                    echo "Monitoring Amazon ECS in the background..."
+                    echo "Waiting for service: ${{ env.ECS_SERVICE }} to reach a stable state"
+                    aws ecs wait services-stable \
+                      --cluster "${{ env.CLUSTER_NAME }}" \
+                      --services "${{ env.ECS_SERVICE }}" &
+                    PID=$!
+                    echo "Stability check initiated under process ID: $PID"
+                    echo "Allowing matrix to move forward while AWS stabilizes the container"
